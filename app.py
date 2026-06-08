@@ -26,9 +26,15 @@ def pobierz_mecze():
 
 wszystkie_mecze = pobierz_mecze()
 
-# Filtrujemy tylko nadchodzące spotkania (status "NS" - Not Started) i bierzemy 5 najbliższych
-nadchodzace_mecze = [m for m in wszystkie_mecze if m['fixture']['status']['short'] in ['NS', 'TBD']]
-nadchodzace_mecze = sorted(nadchodzace_mecze, key=lambda x: x['fixture']['timestamp'])[:5]
+# TESTOWANIE: Wyświetlmy surowe dane, żeby zobaczyć co dostajemy z API
+if not wszystkie_mecze:
+    st.warning("API nie zwróciło żadnych danych. Sprawdź, czy klucz API jest poprawny.")
+else:
+    st.write("DEBUG: Otrzymano liczbę meczów:", len(wszystkie_mecze))
+    # Pokazujemy strukturę jednego meczu, żeby zobaczyć, jak wygląda 'status'
+    st.json(wszystkie_mecze[0]) 
+
+# ... (reszta kodu dalej)
 
 # Nawiązanie połączenia z bazą w Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
