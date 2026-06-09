@@ -13,18 +13,19 @@ nadchodzace_mecze = []
 @st.cache_data(ttl=3600)
 def pobierz_mecze():
     url = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
-    # Spróbujmy zmienić ligę na 1 (MŚ), jeśli nie działa, sprawdzimy inne ID
-    querystring = {"league": "1", "season": "2026"}
+    # Szukamy meczów dla sezonu 2026. Usuwamy ligę, żeby sprawdzić WSZYSTKO co jest w tym sezonie
+    querystring = {"season": "2026"} 
     headers = {
         "X-RapidAPI-Key": st.secrets["api"]["football_key"],
         "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
-    try:
-        response = requests.get(url, headers=headers, params=querystring)
-        dane = response.json()
-        return dane.get('response', [])
-    except Exception:
-        return []
+    response = requests.get(url, headers=headers, params=querystring)
+    return response.json()
+
+# Wyświetl wynik
+wynik = pobierz_mecze()
+st.write("### Surowy wynik z API (sprawdzamy czy coś przychodzi):")
+st.json(wynik)
 
 # Pobranie danych
 wszystkie_mecze = pobierz_mecze()
