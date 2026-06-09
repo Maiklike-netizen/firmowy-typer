@@ -18,7 +18,6 @@ def pobierz_z_api():
         "X-Auth-Token": "0ad260bc8caa424994a2a11512f3c21b",
         "User-Agent": "Mozilla/5.0"
     }
-    # Wymuszamy krótki timeout, żeby aplikacja nie wisiała w nieskończoność
     response = requests.get(url, headers=headers, timeout=3)
     response.raise_for_status()
     return response.json().get('matches', [])
@@ -29,26 +28,31 @@ try:
     mecze_api = pobierz_z_api()
     if mecze_api:
         for m in mecze_api:
+            # 1. Parsujemy tekst z API na prawdziwy obiekt daty (w strefie UTC)
+            data_utc = datetime.strptime(m['utcDate'], "%Y-%m-%dT%H:%M:%SZ")
+            # 2. Dodajemy 2 godziny, aby dostosować czas do polskiej strefy letniej (CEST)
+            data_pl = data_utc + timedelta(hours=2)
+            
             lista_meczow.append({
                 "ID_Meczu": str(m['id']),
                 "Gospodarz": m['homeTeam'].get('name', 'TBD'),
                 "Gosc": m['awayTeam'].get('name', 'TBD'),
-                "Data_Meczu": m['utcDate'].replace("T", " ").replace("Z", ""),
+                # Zapisujemy już poprawny, polski czas do tabeli
+                "Data_Meczu": data_pl.strftime("%Y-%m-%d %H:%M:%S"),
                 "Status": "Zaplanowany" if m['status'] in ['SCHEDULED', 'TIMED'] else ("W trakcie" if m['status'] in ['IN_PLAY', 'PAUSED'] else "Zakończony"),
                 "Gole_Gospodarz": m['score']['fullTime'].get('home', None),
                 "Gole_Gosc": m['score']['fullTime'].get('away', None)
             })
         df_mecze = pd.DataFrame(lista_meczow)
-        st.success("🔄 Dane meczów załadowane na żywo z API!")
-except Exception:
-    # Kluczowy moment: API zawiodło, ładujemy dane z Google Sheets awaryjnie
+        st.success("🔄 Dane meczów załadowane na żywo z API (Czas PL)!")
+except Exception as e:
     st.info("⚠️ Serwer API jest przeciążony. Uruchomiono terminarz awaryjny (Google Sheets).")
     try:
         df_mecze = conn.read(worksheet="Mecze", ttl=10)
         df_mecze["ID_Meczu"] = df_mecze["ID_Meczu"].astype(str)
-    except Exception as e:
-        st.error(f"Nie udało się załadować nawet bazy awaryjnej: {e}")
+    except Exception:
         df_mecze = pd.DataFrame()
+
 
 # --- ŁADOWANIE TYPÓW UŻYTKOWNIKÓW ---
 try:
