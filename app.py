@@ -1,22 +1,18 @@
 import streamlit as st
 import pandas as pd
 import requests
-from streamlit_gsheets import GSheetsConnection
 
-st.set_page_config(page_title="Firmowy Typer", page_icon="⚽", layout="centered")
-st.title("⚽ Firmowy Typer - MŚ 2026")
+st.set_page_config(page_title="Diagnostyka API", layout="wide")
+st.title("🔍 Diagnostyka Połączenia API")
 
-# Połączenie z Google Sheets
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-# --- FUNKCJA API ---
-@st.cache_data(ttl=3600)
-def pobierz_dane_api(endpoint, querystring=None):
-    url = f"https://v3.football.api-sports.io/{endpoint}"
+@st.cache_data(ttl=60)
+def pobierz_surowe_dane():
+    url = "https://v3.football.api-sports.io/leagues"
     headers = {
         "x-rapidapi-key": st.secrets["api"]["football_key"],
         "x-rapidapi-host": "v3.football.api-sports.io"
     }
+    querystring = {"season": "2026", "country": "World"}
     try:
         response = requests.get(url, headers=headers, params=querystring)
         response.raise_for_status()
@@ -24,29 +20,23 @@ def pobierz_dane_api(endpoint, querystring=None):
     except Exception as e:
         return f"BŁĄD: {str(e)}"
 
-# --- LOGIKA ---
-st.write("### Diagnostyka połączenia:")
-# Sprawdzamy listę lig, żeby znaleźć ID dla MŚ 2026
-lista_lig = pobierz_dane_api("leagues", {"season": "2026", "country": "World"})
+dane = pobierz_surowe_dane()
 
-if isinstance(lista_lig, str):
-    st.error(lista_lig)
+if isinstance(dane, str):
+    st.error(dane)
+elif not dane:
+    st.warning("API zwróciło pustą listę. Spróbuj zmienić parametry (np. usuń 'country').")
+    st.write(dane)
 else:
-    st.success("Połączenie z API działa!")
-    # Wyświetlamy znalezione ligi, żebyś mógł znaleźć ID dla "World Cup"
-    df_lig = pd.DataFrame(lista_lig)
-    st.write("Znalezione turnieje (szukaj World Cup):")
-    st.dataframe(df_lig[['league', 'country']], use_container_width=True)
-
-# Przykładowy formularz (zostaje bez zmian)
-st.divider()
-st.write("### 📅 Wytypuj mecz (po znalezieniu ID ligi):")
-id_ligi = st.text_input("Wpisz ID ligi z tabeli powyżej:", "1")
-
-if st.button("Pobierz mecze dla tej ligi"):
-    mecze = pobierz_dane_api("fixtures", {"league": id_ligi, "season": "2026"})
-    if isinstance(mecze, list) and len(mecze) > 0:
-        st.write(f"Pobrano {len(mecze)} meczów!")
-        st.json(mecze[0]) # Pokazuje strukturę pierwszego meczu
-    else:
-        st.warning("Brak meczów dla tego ID ligi.")
+    st.success("Sukces! Dane odebrane.")
+    # Wyświetlamy pierwszy element, żeby zobaczyć strukturę
+    st.write("### Struktura jednego rekordu (pierwszy wynik):")
+    st.json(dane[0])
+    
+    # Próbujemy przekształcić to na tabelę w bezpieczny sposób
+    try:
+        st.write("### Przetworzona tabela:")
+        df = pd.json_normalize(dane)
+        st.dataframe(df, use_container_width=True)
+    except Exception as e:
+        st.error(f"Nie udało się stworzyć tabeli: {e}")
