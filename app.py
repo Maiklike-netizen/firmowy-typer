@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 # Konfiguracja strony
 st.set_page_config(page_title="Firmowy Typer MŚ 2026", page_icon="⚽", layout="centered")
@@ -10,34 +11,50 @@ st.title("⚽ Firmowy Typer - MŚ 2026")
 # Inicjalizacja połączenia z Google Sheets
 conn = st.connection("gsheets", type="streamlit_gsheets.GSheetsConnection")
 
-# --- PRÓBA POBRANIA Z API ---
-@st.cache_data(ttl=300)
-def pobierz_z_api():
+# --- PANZERNA FUNKCJA POBIERANIA Z API (Z AUTOMATYCZNYM PONAWIANIEM) ---
+@st.cache_data(ttl=3600)  # Pamięć podręczna na 1 godzinę (3600 sekund) - drastycznie zmniejsza ryzyko blokady klucza
+def pobierz_z_api_z_retries():
     url = "https://api.football-data.org/v4/competitions/WC/matches"
     headers = {
         "X-Auth-Token": "0ad260bc8caa424994a2a11512f3c21b",
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-    response = requests.get(url, headers=headers, timeout=3)
-    response.raise_for_status()
-    return response.json().get('matches', [])
+    
+    max_retries = 3  # Jeśli nie wyjdzie za pierwszym razem, spróbuj jeszcze 2 razy
+    for i in range(max_retries):
+        try:
+            # Zwiększony timeout do 10 sekund - dajemy serwerowi czas na odpowiedź
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            # Jeśli dostaniemy kod 429 (Too Many Requests), odczekaj chwilę i spróbuj ponownie
+            if response.status_code == 429:
+                time.sleep(2)
+                continue
+                
+            response.raise_for_status()
+            return response.json().get('matches', [])
+            
+        except (requests.exceptions.RequestException, Exception) as e:
+            if i < max_retries - 1:
+                time.sleep(1.5)  # Poczekaj 1.5 sekundy przed kolejną próbą
+                continue
+            else:
+                # Jeśli po 3 próbach dalej jest błąd, przekaż go wyżej do systemu awaryjnego
+                raise e
 
 # --- GŁÓWNA LOGIKA POBIERANIA TERMINARZA ---
 lista_meczow = []
 try:
-    mecze_api = pobierz_z_api()
+    mecze_api = pobierz_z_api_z_retries()
     if mecze_api:
         for m in mecze_api:
-            # 1. Parsujemy tekst z API na prawdziwy obiekt daty (w strefie UTC)
             data_utc = datetime.strptime(m['utcDate'], "%Y-%m-%dT%H:%M:%SZ")
-            # 2. Dodajemy 2 godziny, aby dostosować czas do polskiej strefy letniej (CEST)
-            data_pl = data_utc + timedelta(hours=2)
+            data_pl = data_utc + timedelta(hours=2) # Korekta +2h dla czasu w Polsce
             
             lista_meczow.append({
                 "ID_Meczu": str(m['id']),
                 "Gospodarz": m['homeTeam'].get('name', 'TBD'),
                 "Gosc": m['awayTeam'].get('name', 'TBD'),
-                # Zapisujemy już poprawny, polski czas do tabeli
                 "Data_Meczu": data_pl.strftime("%Y-%m-%d %H:%M:%S"),
                 "Status": "Zaplanowany" if m['status'] in ['SCHEDULED', 'TIMED'] else ("W trakcie" if m['status'] in ['IN_PLAY', 'PAUSED'] else "Zakończony"),
                 "Gole_Gospodarz": m['score']['fullTime'].get('home', None),
@@ -45,8 +62,9 @@ try:
             })
         df_mecze = pd.DataFrame(lista_meczow)
         st.success("🔄 Dane meczów załadowane na żywo z API (Czas PL)!")
-except Exception as e:
-    st.info("⚠️ Serwer API jest przeciążony. Uruchomiono terminarz awaryjny (Google Sheets).")
+except Exception:
+    # Ostateczny bezpiecznik, jeśli system 3 prób zawiedzie na całej linii
+    st.info("⚠️ Serwer API odrzucił połączenie po 3 próbach. Uruchomiono terminarz awaryjny (Google Sheets).")
     try:
         df_mecze = conn.read(worksheet="Mecze", ttl=10)
         df_mecze["ID_Meczu"] = df_mecze["ID_Meczu"].astype(str)
