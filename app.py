@@ -1,120 +1,124 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
-from streamlit_gsheets import GSheetsConnection
+from datetime import datetime
 
 # Konfiguracja strony
 st.set_page_config(page_title="Firmowy Typer MŚ 2026", page_icon="⚽", layout="centered")
 st.title("⚽ Firmowy Typer - MŚ 2026")
 
-# --- FUNKCJA POBIERANIA DANYCH Z FOOTBALL-DATA.ORG ---
-@st.cache_data(ttl=600) # Odświeżaj co 10 minut
-def pobierz_mecze_mundial():
-    # 'WC' to kod dla World Cup w API football-data.org
+# Inicjalizacja połączenia z Google Sheets
+conn = st.connection("gsheets", type="streamlit_gsheets.GSheetsConnection")
+
+# --- PRÓBA POBRANIA Z API ---
+@st.cache_data(ttl=300)
+def pobierz_z_api():
     url = "https://api.football-data.org/v4/competitions/WC/matches"
     headers = {
-        "X-Auth-Token": "0ad260bc8caa424994a2a11512f3c21b"
+        "X-Auth-Token": "0ad260bc8caa424994a2a11512f3c21b",
+        "User-Agent": "Mozilla/5.0"
     }
-    try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json().get('matches', [])
-    except Exception as e:
-        return f"Błąd połączenia z API: {e}"
+    # Wymuszamy krótki timeout, żeby aplikacja nie wisiała w nieskończoność
+    response = requests.get(url, headers=headers, timeout=3)
+    response.raise_for_status()
+    return response.json().get('matches', [])
 
-# --- POŁĄCZENIE Z GOOGLE SHEETS (dla typów) ---
+# --- GŁÓWNA LOGIKA POBIERANIA TERMINARZA ---
+lista_meczow = []
 try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df_typy = conn.read(worksheet="Typy", ttl=0)
+    mecze_api = pobierz_z_api()
+    if mecze_api:
+        for m in mecze_api:
+            lista_meczow.append({
+                "ID_Meczu": str(m['id']),
+                "Gospodarz": m['homeTeam'].get('name', 'TBD'),
+                "Gosc": m['awayTeam'].get('name', 'TBD'),
+                "Data_Meczu": m['utcDate'].replace("T", " ").replace("Z", ""),
+                "Status": "Zaplanowany" if m['status'] in ['SCHEDULED', 'TIMED'] else ("W trakcie" if m['status'] in ['IN_PLAY', 'PAUSED'] else "Zakończony"),
+                "Gole_Gospodarz": m['score']['fullTime'].get('home', None),
+                "Gole_Gosc": m['score']['fullTime'].get('away', None)
+            })
+        df_mecze = pd.DataFrame(lista_meczow)
+        st.success("🔄 Dane meczów załadowane na żywo z API!")
 except Exception:
-    # Zabezpieczenie, jeśli arkusz jest pusty lub nie ma kolumn
-    df_typy = pd.DataFrame(columns=["Pracownik", "ID_Meczu", "Gospodarz", "Gosc", "Typ_Gospodarz", "Typ_Gosc", "Data_Zapisu"])
+    # Kluczowy moment: API zawiodło, ładujemy dane z Google Sheets awaryjnie
+    st.info("⚠️ Serwer API jest przeciążony. Uruchomiono terminarz awaryjny (Google Sheets).")
+    try:
+        df_mecze = conn.read(worksheet="Mecze", ttl=10)
+        df_mecze["ID_Meczu"] = df_mecze["ID_Meczu"].astype(str)
+    except Exception as e:
+        st.error(f"Nie udało się załadować nawet bazy awaryjnej: {e}")
+        df_mecze = pd.DataFrame()
 
-# Pobieranie meczów
-mecze_api = pobierz_mecze_mundial()
+# --- ŁADOWANIE TYPÓW UŻYTKOWNIKÓW ---
+try:
+    df_typy = conn.read(worksheet="Typy", ttl=0)
+    df_typy["ID_Meczu"] = df_typy["ID_Meczu"].astype(str)
+except Exception:
+    df_typy = pd.DataFrame(columns=["Pracownik", "ID_Meczu", "Typ_Gospodarz", "Typ_Gosc"])
 
-st.write("### 📅 Nadchodzące i aktualne mecze")
-pracownik = st.text_input("👤 Podaj swoje imię / Nick", placeholder="np. Jan Kowalski")
+# --- INTERFEJS UŻYTKOWNIKA ---
+pracownik = st.text_input("👤 Podaj swoje imię / Nick", placeholder="np. Jan Kowalski").strip()
 st.divider()
 
-if isinstance(mecze_api, str):
-    st.error(mecze_api)
-elif not mecze_api:
-    st.warning("API nie zwróciło żadnych meczów. Możliwe, że dane o MŚ 2026 nie są jeszcze aktywne w football-data.org.")
-else:
-    teraz = datetime.utcnow() # API zwraca czas w UTC
+if not df_mecze.empty:
+    teraz = datetime.now()
     
-    for mecz in mecze_api:
-        id_m = str(mecz['id'])
+    for _, row in df_mecze.iterrows():
+        id_m = str(row['ID_Meczu'])
+        gosp = row['Gospodarz']
+        gosc = row['Gosc']
+        status = row['Status']
         
-        # Pobieranie nazw drużyn (jeśli są już znane, inaczej API podaje "TBD")
-        gosp = mecz['homeTeam'].get('name', 'Nieznany (TBD)')
-        gosc = mecz['awayTeam'].get('name', 'Nieznany (TBD)')
-        
-        # Czas meczu i formatowanie
-        data_meczu_utc = datetime.strptime(mecz['utcDate'], "%Y-%m-%dT%H:%M:%SZ")
-        data_meczu_lokalna = data_meczu_utc + timedelta(hours=2) # Dopasowanie do polskiego czasu letniego (CEST)
-        data_str = data_meczu_lokalna.strftime("%d.%m.%Y %H:%M")
-        
-        # Ustalanie statusu po polsku
-        status_api = mecz['status']
-        if status_api in ['SCHEDULED', 'TIMED']:
-            status_pl = "🟢 Zaplanowany"
-            czy_mozna_typowac = teraz < data_meczu_utc
-        elif status_api in ['IN_PLAY', 'PAUSED']:
-            status_pl = "🟡 W trakcie"
-            czy_mozna_typowac = False
-        elif status_api == 'FINISHED':
-            status_pl = "🔴 Zakończony"
-            czy_mozna_typowac = False
-        else:
-            status_pl = f"⚪ Inny ({status_api})"
-            czy_mozna_typowac = False
-
-        # Wyświetlanie karty meczu
-        with st.container(border=True):
-            cols = st.columns([3, 1])
-            cols[0].subheader(f"🏟️ {gosp} vs {gosc}")
-            cols[1].markdown(f"**{status_pl}**")
-            st.caption(f"🕒 Start: {data_str}")
+        # Parsowanie daty meczu do porównania deadline'u
+        try:
+            data_m = datetime.strptime(str(row['Data_Meczu']), "%Y-%m-%d %H:%M:%S")
+        except:
+            data_m = teraz # Bezpiecznik na wypadek błędnego wpisu w arkuszu
             
-            # Formularz tylko dla meczów z otwartym oknem typowania
-            if czy_mozna_typowac:
-                with st.form(f"form_{id_m}"):
-                    c1, c2 = st.columns(2)
-                    tg = c1.number_input(f"Gole {gosp}", min_value=0, step=1, key=f"tg_{id_m}")
-                    tgo = c2.number_input(f"Gole {gosc}", min_value=0, step=1, key=f"tgo_{id_m}")
-                    
-                    zapisz = st.form_submit_button("Zapisz typ")
-                    if zapisz:
-                        # Weryfikacja po stronie serwera (na wypadek, gdyby ktoś długo trzymał otwartą stronę)
-                        if datetime.utcnow() >= data_meczu_utc:
-                            st.error("Czas minął! Mecz już się rozpoczął.")
-                        elif not pracownik:
-                            st.error("Wpisz swoje imię, aby zapisać typ!")
-                        else:
-                            nowy_wiersz = pd.DataFrame([{
-                                "Pracownik": pracownik,
-                                "ID_Meczu": id_m,
-                                "Gospodarz": gosp,
-                                "Gosc": gosc,
-                                "Typ_Gospodarz": tg,
-                                "Typ_Gosc": tgo,
-                                "Data_Zapisu": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            }])
-                            df_typy = pd.concat([df_typy, nowy_wiersz], ignore_index=True)
-                            conn.update(worksheet="Typy", data=df_typy)
-                            st.success(f"Zapisano typ {tg}:{tgo} dla {pracownik}!")
-                            st.rerun()
+        czy_przed_meczem = teraz < data_m
+        
+        with st.container(border=True):
+            col1, col2 = st.columns([3, 1])
+            col1.subheader(f"🏟️ {gosp} vs {gosc}")
+            
+            # Kolorowanie statusów
+            if status == "Zaplanowany" and czy_przed_meczem:
+                col2.markdown("🟢 **Zaplanowany**")
+            elif status == "W trakcie" or not czy_przed_meczem:
+                col2.markdown("🟡 **W trakcie / Blokada**")
             else:
-                if status_api == 'FINISHED':
-                    wynik_gosp = mecz['score']['fullTime'].get('home', '?')
-                    wynik_gosc = mecz['score']['fullTime'].get('away', '?')
-                    st.info(f"Typowanie zamknięte. Wynik końcowy: **{wynik_gosp} : {wynik_gosc}**")
+                col2.markdown("🔴 **Zakończony**")
+                
+            st.caption(f"🕒 Czas rozpoczęcia: {data_m.strftime('%d.%m.%Y %H:%M')}")
+            
+            # Logika blokowania formularza po czasie
+            if czy_przed_meczem and status == "Zaplanowany":
+                # Sprawdzenie czy ten użytkownik już typował ten mecz
+                juz_typowal = not df_typy[(df_typy["Pracownik"] == pracownik) & (df_typy["ID_Meczu"] == id_m)].empty
+                
+                if juz_typowal:
+                    st.success("✅ Twój typ na ten mecz jest już zapisany bezpiecznie w bazie.")
                 else:
-                    st.warning("Typowanie zamknięte. Mecz wkrótce się rozpocznie lub już trwa.")
+                    with st.form(f"form_{id_m}"):
+                        c1, c2 = st.columns(2)
+                        tg = c1.number_input(f"Gole {gosp}", min_value=0, step=1, key=f"tg_{id_m}")
+                        tgo = c2.number_input(f"Gole {gosc}", min_value=0, step=1, key=f"tgo_{id_m}")
+                        
+                        if st.form_submit_button("Zapisz typ"):
+                            if not pracownik:
+                                st.error("Musisz podać swoje imię na górze strony!")
+                            else:
+                                nowy_typ = pd.DataFrame([{"Pracownik": pracownik, "ID_Meczu": id_m, "Typ_Gospodarz": tg, "Typ_Gosc": tgo}])
+                                df_typy = pd.concat([df_typy, nowy_typ], ignore_index=True)
+                                conn.update(worksheet="Typy", data=df_typy)
+                                st.success("Typ zapisany!")
+                                st.rerun()
+            else:
+                g_g = row.get('Gole_Gospodarz', '-')
+                g_go = row.get('Gole_Gosc', '-')
+                st.warning(f"🔒 Typowanie zamknięte. Wynik meczu: {g_g} : {g_go}")
 
 st.divider()
-st.subheader("📊 Twoje i firmowe typy (z bazy)")
+st.subheader("📊 Wszystkie dotychczasowe typy w bazie")
 st.dataframe(df_typy, use_container_width=True)
