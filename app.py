@@ -11,19 +11,13 @@ st.title("⚽ Firmowy Typer - MŚ 2026")
 # --- FUNKCJA POBIERANIA DANYCH Z FOOTBALL-DATA.ORG ---
 @st.cache_data(ttl=600) # Odświeżaj co 10 minut
 def pobierz_mecze_mundial():
-    # Używamy głównego endpointu, który znalazłeś
-    url = "https://api.football-data.org/v4/matches"
+    # 'WC' to kod dla World Cup w API football-data.org
+    url = "https://api.football-data.org/v4/competitions/WC/matches"
     headers = {
-        "X-Auth-Token": "0ad260bc8caa424994a2a11512f3c21b",
-        # Ten nagłówek zapobiega błędom SSL (serwer myśli, że to zwykła przeglądarka)
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "X-Auth-Token": "0ad260bc8caa424994a2a11512f3c21b"
     }
-    # Filtrujemy tylko mecze Mistrzostw Świata (WC to kod turnieju)
-    querystring = {"competitions": "WC"}
-    
     try:
-        # Dodany timeout na wypadek problemów z serwerem API
-        response = requests.get(url, headers=headers, params=querystring, timeout=10)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response.json().get('matches', [])
     except Exception as e:
@@ -47,20 +41,20 @@ st.divider()
 if isinstance(mecze_api, str):
     st.error(mecze_api)
 elif not mecze_api:
-    st.warning("API nie zwróciło żadnych meczów. Możliwe, że dane o MŚ 2026 nie są jeszcze aktywne w bazie pod tym endpointem.")
+    st.warning("API nie zwróciło żadnych meczów. Możliwe, że dane o MŚ 2026 nie są jeszcze aktywne w football-data.org.")
 else:
     teraz = datetime.utcnow() # API zwraca czas w UTC
     
     for mecz in mecze_api:
         id_m = str(mecz['id'])
         
-        # Pobieranie nazw drużyn
+        # Pobieranie nazw drużyn (jeśli są już znane, inaczej API podaje "TBD")
         gosp = mecz['homeTeam'].get('name', 'Nieznany (TBD)')
         gosc = mecz['awayTeam'].get('name', 'Nieznany (TBD)')
         
         # Czas meczu i formatowanie
         data_meczu_utc = datetime.strptime(mecz['utcDate'], "%Y-%m-%dT%H:%M:%SZ")
-        data_meczu_lokalna = data_meczu_utc + timedelta(hours=2) # Dopasowanie do czasu CEST
+        data_meczu_lokalna = data_meczu_utc + timedelta(hours=2) # Dopasowanie do polskiego czasu letniego (CEST)
         data_str = data_meczu_lokalna.strftime("%d.%m.%Y %H:%M")
         
         # Ustalanie statusu po polsku
@@ -94,6 +88,7 @@ else:
                     
                     zapisz = st.form_submit_button("Zapisz typ")
                     if zapisz:
+                        # Weryfikacja po stronie serwera (na wypadek, gdyby ktoś długo trzymał otwartą stronę)
                         if datetime.utcnow() >= data_meczu_utc:
                             st.error("Czas minął! Mecz już się rozpoczął.")
                         elif not pracownik:
